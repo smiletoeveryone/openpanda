@@ -1,7 +1,7 @@
 <div align="center">
   <img src="assets/panda.svg" width="120" alt="OpenPanda logo" />
   <h1>OpenPanda</h1>
-  <p>Lightweight AI agent manager with a CLI and an interactive streaming terminal UI, powered by the <strong>OpenClaw</strong> engine.</p>
+  <p>Lightweight AI agent manager with a CLI and an interactive streaming terminal UI, powered by <strong>Scott of Entropy AI Lab</strong>.</p>
   <p>Supports <strong>Anthropic (Claude)</strong>, <strong>OpenAI (GPT)</strong>, and <strong>Ollama (local)</strong> out of the box.</p>
 </div>
 
