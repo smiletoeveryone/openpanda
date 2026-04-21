@@ -13,13 +13,15 @@ import type { Logger } from "../infra/logger.js";
 import { createLogger, newTraceId } from "../infra/logger.js";
 import { loadSkills } from "../ui/skillLoader.js";
 import { loadAgents } from "../ui/agentLoader.js";
+import { mdToTelegramHtml } from "./format.js";
 
 // Load skill and agent preset registries once at startup
 const SKILLS = loadSkills();
 const AGENT_PRESETS = loadAgents();
 
 interface StreamBuffer {
-  text: string;
+  text: string;        // full accumulated raw text — never cleared mid-stream
+  flushedLen: number;  // length of text at the time of the last flush
   messageId?: number;
   timer?: NodeJS.Timeout;
 }
@@ -190,6 +192,7 @@ export class TelegramMessageHandler {
     try {
       const buffer: StreamBuffer = {
         text: "",
+        flushedLen: 0,
         messageId: undefined,
         timer: undefined,
       };
@@ -201,6 +204,7 @@ export class TelegramMessageHandler {
 
         if (buffer.timer) clearTimeout(buffer.timer);
 
+        // Force-flush when accumulated text is approaching Telegram's limit
         if (buffer.text.length >= CHUNK_BUFFER_SIZE) {
           this.flushStreamBuffer(chatId, buffer).catch(console.error);
         } else {
@@ -212,14 +216,18 @@ export class TelegramMessageHandler {
 
       const fullResponse = await agent.stream(userMessage, { onChunk });
 
+      // Cancel any pending debounce timer
       if (buffer.timer) clearTimeout(buffer.timer);
 
-      if (buffer.text.length > 0) {
+      // Final flush — send whatever hasn't been flushed yet
+      if (buffer.text.length > buffer.flushedLen) {
         await this.flushStreamBuffer(chatId, buffer);
       }
 
+      // If nothing was ever sent (e.g. empty response), send the fallback
       if (!buffer.messageId) {
-        const result = await this.client.sendMessage(chatId, fullResponse || "✓ Done");
+        const fallback = fullResponse ? mdToTelegramHtml(fullResponse) : "✓ Done";
+        const result = await this.client.sendMessage(chatId, fallback);
         buffer.messageId = result.message_id;
       }
     } catch (error) {
@@ -232,22 +240,27 @@ export class TelegramMessageHandler {
   }
 
   /**
-   * Flush accumulated stream buffer to Telegram
+   * Flush accumulated stream buffer to Telegram.
+   * Converts raw markdown to Telegram HTML and edits the live message so the
+   * user sees the response grow in place. buffer.text is never cleared — we
+   * track flushedLen to avoid redundant edits when nothing new has arrived.
    */
   private async flushStreamBuffer(
     chatId: number,
     buffer: StreamBuffer
   ): Promise<void> {
-    if (!buffer.text) return;
+    if (buffer.text.length === buffer.flushedLen) return; // nothing new
+
+    const html = mdToTelegramHtml(buffer.text);
 
     try {
       if (buffer.messageId) {
-        await this.client.editMessageText(chatId, buffer.messageId, buffer.text);
+        await this.client.editMessageText(chatId, buffer.messageId, html);
       } else {
-        const result = await this.client.sendMessage(chatId, buffer.text);
+        const result = await this.client.sendMessage(chatId, html);
         buffer.messageId = result.message_id;
       }
-      buffer.text = "";
+      buffer.flushedLen = buffer.text.length;
     } catch (error) {
       console.error("Failed to flush stream buffer:", error);
     }
