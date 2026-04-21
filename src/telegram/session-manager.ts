@@ -110,6 +110,53 @@ export class TelegramSessionManager {
   }
 
   /**
+   * Spawn a new agent for the session, carrying over the current message history.
+   * Used when applying a skill or agent preset that changes the system prompt or model.
+   */
+  async respawnAgent(
+    chatId: number,
+    provider: ProviderName,
+    model: string,
+    systemPrompt: string | undefined
+  ): Promise<Agent> {
+    const session = this.sessions.get(chatId);
+    if (!session) throw new Error(`No session for chatId ${chatId}`);
+
+    // Snapshot history before discarding the old agent
+    const history = session.agent
+      ? [...session.agent.state.messages].map((m) => ({
+          role: m.role,
+          content: m.content,
+          rawBlocks: m.rawBlocks,
+          toolResults: m.toolResults,
+        }))
+      : [];
+
+    const newAgent = await this.manager.spawn({
+      name: session.sessionName,
+      provider,
+      model,
+      systemPrompt,
+    });
+
+    // Restore history into the new agent
+    if (history.length > 0) {
+      newAgent.loadHistory(history);
+    }
+
+    // Stop and replace old agent
+    if (session.agent) {
+      this.manager.remove(session.agent.id);
+    }
+    session.agent = newAgent;
+    session.provider = provider;
+    session.model = model;
+    session.systemPrompt = systemPrompt;
+
+    return newAgent;
+  }
+
+  /**
    * Get an existing session
    */
   getSession(chatId: number): TelegramSession | undefined {
