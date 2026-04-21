@@ -185,16 +185,20 @@ program.addCommand(
       console.log(chalk.cyan("🤖 Telegram bot started. Listening for messages...\n"));
       console.log(chalk.dim("Press Ctrl+C to stop\n"));
 
-      // Get bot info for display
-      const meResult = await client.getMe();
-      if (meResult.ok && meResult.result) {
-        console.log(chalk.green(`✓ Bot: @${meResult.result.username || meResult.result.first_name}`));
-        if (config.providers.telegram.chatId) {
-          console.log(chalk.green(`✓ Restricted to chat: ${config.providers.telegram.chatId}`));
-        } else {
-          console.log(chalk.yellow("⚠ Bot accepts messages from any user"));
+      // Get bot info for display — non-fatal if network hiccups here
+      try {
+        const meResult = await client.getMe();
+        if (meResult.ok && meResult.result) {
+          console.log(chalk.green(`✓ Bot: @${meResult.result.username || meResult.result.first_name}`));
+          if (config.providers.telegram?.chatId) {
+            console.log(chalk.green(`✓ Restricted to chat: ${config.providers.telegram.chatId}`));
+          } else {
+            console.log(chalk.yellow("⚠ Bot accepts messages from any user"));
+          }
+          console.log("");
         }
-        console.log("");
+      } catch {
+        console.log(chalk.yellow("⚠ Could not fetch bot info (network hiccup), continuing...\n"));
       }
 
       // ── Drain leftover tasks from previous crash ─────────────────────────────
