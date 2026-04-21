@@ -1,8 +1,9 @@
-# OpenPanda
-
-Lightweight AI agent manager with a CLI and an interactive streaming terminal UI, powered by the **OpenClaw** engine.
-
-Supports **Anthropic (Claude)**, **OpenAI (GPT)**, and **Ollama (local)** out of the box.
+<div align="center">
+  <img src="assets/panda.svg" width="120" alt="OpenPanda logo" />
+  <h1>OpenPanda</h1>
+  <p>Lightweight AI agent manager with a CLI and an interactive streaming terminal UI, powered by the <strong>OpenClaw</strong> engine.</p>
+  <p>Supports <strong>Anthropic (Claude)</strong>, <strong>OpenAI (GPT)</strong>, and <strong>Ollama (local)</strong> out of the box.</p>
+</div>
 
 ---
 
