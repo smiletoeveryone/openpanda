@@ -16,7 +16,7 @@ const PANDA_ASCII = `
   ${chalk.bold.white("   (\\(\\  ")}
   ${chalk.bold.white("  ( -.-)  ")}  ${chalk.bold.cyan("OpenPanda")} ${chalk.dim("v0.1.0")}
   ${chalk.bold.white(" o_(\")(\")  ")}  ${chalk.dim("Lightweight agent manager")}
-               ${chalk.dim("powered by")} ${chalk.bold.magenta("Entropy AI Lab.")}
+               ${chalk.dim("powered by")} ${chalk.bold.magenta("Scott of Entropy AI Lab.")}
 `;
 
 export function printWelcome() {
