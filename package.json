@@ -1,0 +1,50 @@
+{
+  "name": "openpanda",
+  "version": "0.1.0",
+  "description": "Lightweight agent manager (openclaw) with CLI and terminal UI",
+  "type": "module",
+  "bin": {
+    "openpanda": "./dist/cli/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx watch src/index.ts",
+    "cli": "tsx src/cli/index.ts",
+    "ui": "tsx src/ui/index.ts",
+    "start": "node dist/index.js",
+    "lint": "eslint src --ext .ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest",
+    "test:run": "vitest run",
+    "test:watch": "vitest watch"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "@inquirer/prompts": "^8.4.2",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@mozilla/readability": "^0.6.0",
+    "@types/jsdom": "^28.0.1",
+    "chalk": "^5.3.0",
+    "commander": "^12.1.0",
+    "dotenv": "^17.4.2",
+    "ink": "^5.1.0",
+    "ink-spinner": "^5.0.0",
+    "ink-text-input": "^6.0.0",
+    "jsdom": "^29.0.2",
+    "openai": "^6.34.0",
+    "react": "^18.3.1",
+    "uuid": "^10.0.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/react": "^18.3.0",
+    "@types/uuid": "^10.0.0",
+    "@typescript-eslint/eslint-plugin": "^8.0.0",
+    "@typescript-eslint/parser": "^8.0.0",
+    "eslint": "^9.0.0",
+    "tsx": "^4.16.0",
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0"
+  }
+}
