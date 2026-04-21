@@ -13,7 +13,7 @@ import type { Logger } from "../infra/logger.js";
 import { createLogger, newTraceId } from "../infra/logger.js";
 import { loadSkills } from "../ui/skillLoader.js";
 import { loadAgents } from "../ui/agentLoader.js";
-import { mdToTelegramHtml } from "./format.js";
+import { mdToTelegramHtml, findSplitPoint } from "./format.js";
 
 // Load skill and agent preset registries once at startup
 const SKILLS = loadSkills();
@@ -26,7 +26,7 @@ interface StreamBuffer {
   timer?: NodeJS.Timeout;
 }
 
-const CHUNK_BUFFER_SIZE = 3500; // Telegram max is 4096, leave room for formatting
+const CHUNK_BUFFER_SIZE = 2000; // Flush early so we have room to split before hitting Telegram's 4096 limit
 const CHUNK_FLUSH_INTERVAL = 500; // ms
 
 /** Input validation: non-empty string, max 4000 chars, trimmed. */
@@ -242,8 +242,10 @@ export class TelegramMessageHandler {
   /**
    * Flush accumulated stream buffer to Telegram.
    * Converts raw markdown to Telegram HTML and edits the live message so the
-   * user sees the response grow in place. buffer.text is never cleared — we
-   * track flushedLen to avoid redundant edits when nothing new has arrived.
+   * user sees the response grow in place. When the HTML would exceed Telegram's
+   * 4096-char limit, the current message is sealed and a new message is started
+   * for the remainder. buffer.text is reset on split so buffer.flushedLen always
+   * refers to the current (unsealed) segment.
    */
   private async flushStreamBuffer(
     chatId: number,
@@ -251,16 +253,42 @@ export class TelegramMessageHandler {
   ): Promise<void> {
     if (buffer.text.length === buffer.flushedLen) return; // nothing new
 
+    const MAX_HTML = 3800; // well below Telegram's 4096 limit
     const html = mdToTelegramHtml(buffer.text);
 
     try {
-      if (buffer.messageId) {
-        await this.client.editMessageText(chatId, buffer.messageId, html);
+      if (html.length > MAX_HTML) {
+        // Estimate how many raw chars map to MAX_HTML rendered chars
+        const ratio = buffer.text.length / Math.max(html.length, 1);
+        const targetRaw = Math.floor(MAX_HTML * ratio);
+        const splitAt = findSplitPoint(buffer.text, Math.min(targetRaw, buffer.text.length));
+
+        const firstHtml = mdToTelegramHtml(buffer.text.slice(0, splitAt));
+
+        if (buffer.messageId) {
+          await this.client.editMessageText(chatId, buffer.messageId, firstHtml);
+        } else {
+          const result = await this.client.sendMessage(chatId, firstHtml);
+          buffer.messageId = result.message_id;
+        }
+
+        // Seal the current message; start fresh for the remainder
+        buffer.text = buffer.text.slice(splitAt);
+        buffer.flushedLen = 0;
+        buffer.messageId = undefined;
+
+        if (buffer.text.length > 0) {
+          await this.flushStreamBuffer(chatId, buffer);
+        }
       } else {
-        const result = await this.client.sendMessage(chatId, html);
-        buffer.messageId = result.message_id;
+        if (buffer.messageId) {
+          await this.client.editMessageText(chatId, buffer.messageId, html);
+        } else {
+          const result = await this.client.sendMessage(chatId, html);
+          buffer.messageId = result.message_id;
+        }
+        buffer.flushedLen = buffer.text.length;
       }
-      buffer.flushedLen = buffer.text.length;
     } catch (error) {
       console.error("Failed to flush stream buffer:", error);
     }

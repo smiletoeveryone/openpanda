@@ -42,7 +42,20 @@ function applyInline(text: string): string {
 }
 
 /**
- * Convert a full markdown string to Telegram-safe HTML.
+ * Find a clean split point in raw text near targetLen chars.
+ * Prefers paragraph breaks, falls back to single newlines, then hard split.
+ */
+export function findSplitPoint(text: string, targetLen: number): number {
+  if (text.length <= targetLen) return text.length;
+  const sub = text.slice(0, targetLen);
+  const pp = sub.lastIndexOf("\n\n");
+  if (pp > targetLen / 3) return pp + 2;
+  const nl = sub.lastIndexOf("\n");
+  if (nl > targetLen / 3) return nl + 1;
+  return targetLen;
+}
+
+/**
  * Safe to call on a partial (mid-stream) buffer — unclosed code blocks
  * are rendered as <pre> without a closing fence.
  */

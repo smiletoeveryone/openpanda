@@ -167,10 +167,7 @@ export class TelegramClient {
   ): Promise<void> {
     // Don't edit if text is identical or too long
     if (text.length > 4096) {
-      console.warn(
-        `Message too long for edit (${text.length} chars), sending new message instead`
-      );
-      return;
+      throw new Error(`editMessageText: text too long (${text.length} chars), caller must split`);
     }
 
     const result = await this.request<TelegramEditMessageResult>(
