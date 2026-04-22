@@ -14,6 +14,7 @@ import { createLogger, newTraceId } from "../infra/logger.js";
 import { FileCheckpointer } from "../infra/checkpointer.js";
 import { FileTaskQueue } from "../infra/taskQueue.js";
 import { UserRateLimiter } from "../infra/rateLimit.js";
+import { startLlamaServer, findLlamaServerBinary } from "../llamacpp/server.js";
 
 // Manager is created after config/setup resolves — held in closure
 let _manager: OpenClaw | undefined;
@@ -302,6 +303,99 @@ program.addCommand(
       while (true) {
         await poll();
       }
+    })
+);
+
+program.addCommand(
+  new Command("llamacpp")
+    .description("Start a llama.cpp server (Llama 4 / any GGUF model) with an OpenAI-compatible API")
+    .option("--model <path>", "Path to .gguf model file (overrides config)")
+    .option("--port <port>", "Server port (default: 8080)")
+    .option("--gpu-layers <n>", "GPU layers to offload (0 = CPU only, -1 = all)")
+    .option("--ctx-size <n>", "Context window size in tokens (default: 4096)")
+    .option("--server-path <path>", "Path to llama-server binary (auto-detected if omitted)")
+    .action(async (opts) => {
+      const { default: chalk } = await import("chalk");
+
+      const config = await ensureConfigured();
+
+      // Merge CLI flags over stored config
+      const serverCfg = {
+        ...config.llamacpp,
+        ...(opts.model       && { modelPath:    opts.model }),
+        ...(opts.port        && { port:         parseInt(opts.port, 10) }),
+        ...(opts.gpuLayers   && { nGpuLayers:   parseInt(opts.gpuLayers, 10) }),
+        ...(opts.ctxSize     && { ctxSize:       parseInt(opts.ctxSize, 10) }),
+        ...(opts.serverPath  && { serverPath:    opts.serverPath }),
+      };
+
+      // Resolve model from env if still not set
+      if (!serverCfg.modelPath && process.env.LLAMACPP_MODEL) {
+        serverCfg.modelPath = process.env.LLAMACPP_MODEL;
+      }
+
+      if (!serverCfg.modelPath) {
+        console.error(
+          chalk.red("\n❌ No model path set.\n") +
+          chalk.dim("  Run: openpanda setup\n") +
+          chalk.dim("  Or:  LLAMACPP_MODEL=/path/to/model.gguf openpanda llamacpp\n")
+        );
+        process.exit(1);
+      }
+
+      // Show binary status
+      const binary = findLlamaServerBinary(serverCfg.serverPath);
+      if (!binary) {
+        console.error(
+          chalk.red("\n❌ llama-server binary not found.\n") +
+          chalk.dim("  Install llama.cpp: https://github.com/ggerganov/llama.cpp\n") +
+          chalk.dim("  Then ensure `llama-server` is on your PATH.\n")
+        );
+        process.exit(1);
+      }
+
+      const host = serverCfg.host ?? "127.0.0.1";
+      const port = serverCfg.port ?? 8080;
+      const endpoint = `http://${host}:${port}`;
+
+      console.log(chalk.bold.cyan("\n🦙 OpenPanda — llama.cpp Server\n"));
+      console.log(chalk.dim(`  Model:    ${serverCfg.modelPath}`));
+      console.log(chalk.dim(`  Binary:   ${binary}`));
+      console.log(chalk.dim(`  Endpoint: ${endpoint}/v1  (OpenAI-compatible)\n`));
+      console.log(chalk.dim("  Starting llama-server…\n"));
+
+      const server = startLlamaServer(serverCfg);
+
+      // Graceful shutdown on Ctrl+C / SIGTERM
+      const shutdown = () => {
+        console.log(chalk.dim("\n  Stopping llama-server…"));
+        server.stop();
+        process.exit(0);
+      };
+      process.on("SIGINT",  shutdown);
+      process.on("SIGTERM", shutdown);
+
+      try {
+        await server.waitForReady(60_000);
+      } catch (err) {
+        console.error(chalk.red(`\n❌ ${err instanceof Error ? err.message : err}\n`));
+        server.stop();
+        process.exit(1);
+      }
+
+      console.log(chalk.green(`\n✓ llama-server is ready!\n`));
+      console.log(chalk.bold("  OpenAI-compatible endpoints:"));
+      console.log(chalk.cyan(`  ${endpoint}/v1/chat/completions`));
+      console.log(chalk.cyan(`  ${endpoint}/v1/models`));
+      console.log(chalk.cyan(`  ${endpoint}/v1/completions`));
+      console.log(chalk.dim("\n  Connect any OpenAI client to this URL:"));
+      console.log(chalk.dim(`    base_url="${endpoint}/v1"  api_key="local"\n`));
+      console.log(chalk.dim("  Use in OpenPanda:"));
+      console.log(chalk.dim("    openpanda chat -p llamacpp -m local\n"));
+      console.log(chalk.dim("  Press Ctrl+C to stop.\n"));
+
+      // Keep the process alive — llama-server runs as a child process
+      await new Promise<void>(() => { /* wait for SIGINT/SIGTERM */ });
     })
 );
 

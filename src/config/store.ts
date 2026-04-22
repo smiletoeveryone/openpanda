@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync, chmodSync } from "f
 import { homedir } from "os";
 import { join } from "path";
 
-export type ProviderName = "anthropic" | "openai" | "ollama" | "telegram";
+export type ProviderName = "anthropic" | "openai" | "ollama" | "telegram" | "llamacpp";
 
 export interface ProviderConfig {
   apiKey?: string;
@@ -11,10 +11,22 @@ export interface ProviderConfig {
   enabled: boolean;
 }
 
+/** Server startup configuration for llama.cpp (separate from provider connection config). */
+export interface LlamaCppServerConfig {
+  serverPath?: string;   // path to llama-server binary; auto-detected if omitted
+  modelPath?: string;    // path to .gguf model file (required to start the server)
+  host?: string;         // bind host (default: "127.0.0.1")
+  port?: number;         // listen port (default: 8080)
+  nGpuLayers?: number;  // GPU layers to offload: 0 = CPU only, -1 = all (default: 0)
+  ctxSize?: number;      // context window size in tokens (default: 4096)
+  threads?: number;      // CPU threads; omit to let llama.cpp auto-detect
+}
+
 export interface AppConfig {
   providers: Partial<Record<ProviderName, ProviderConfig>>;
   defaultProvider: ProviderName;
   defaultModel: string;
+  llamacpp?: LlamaCppServerConfig;
 }
 
 const CONFIG_DIR = join(homedir(), ".openpanda");
@@ -64,6 +76,9 @@ function configFromEnv(): Partial<AppConfig> {
   }
   if (process.env.OLLAMA_BASE_URL) {
     providers.ollama = { baseUrl: process.env.OLLAMA_BASE_URL, enabled: true };
+  }
+  if (process.env.LLAMACPP_BASE_URL) {
+    providers.llamacpp = { baseUrl: process.env.LLAMACPP_BASE_URL, enabled: true };
   }
   if (process.env.TELEGRAM_BOT_TOKEN) {
     providers.telegram = { apiKey: process.env.TELEGRAM_BOT_TOKEN, enabled: true };

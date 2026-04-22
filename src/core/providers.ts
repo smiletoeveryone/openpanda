@@ -280,6 +280,118 @@ export async function buildProvider(providerName: string, config: AppConfig): Pr
     };
   }
 
+  // ── llama.cpp (OpenAI-compatible) ──────────────────────────────────────────
+  if (providerName === "llamacpp") {
+    const baseUrl = providerCfg?.baseUrl ?? "http://127.0.0.1:8080";
+    const v1 = `${baseUrl}/v1`;
+
+    const toMessages = (messages: AgentMessage[], system?: string) => [
+      ...(system ? [{ role: "system", content: system }] : []),
+      ...messages.map((m) => ({ role: m.role, content: m.content })),
+    ];
+
+    /** Parse an OpenAI-compatible SSE stream, yielding each delta object. */
+    async function* sseDeltas(body: ReadableStream<Uint8Array>, signal: AbortSignal) {
+      const reader = body.getReader();
+      const decoder = new TextDecoder();
+      let buf = "";
+      try {
+        while (!signal.aborted) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          const lines = buf.split("\n");
+          buf = lines.pop() ?? "";
+          for (const line of lines) {
+            if (!line.startsWith("data: ")) continue;
+            const payload = line.slice(6).trim();
+            if (payload === "[DONE]") return;
+            try {
+              type Delta = {
+                content?: string;
+                tool_calls?: Array<{ index: number; id?: string; function?: { name?: string; arguments?: string } }>;
+              };
+              const json = JSON.parse(payload) as { choices?: Array<{ delta?: Delta }> };
+              const delta = json.choices?.[0]?.delta;
+              if (delta) yield delta;
+            } catch { /* skip malformed SSE frame */ }
+          }
+        }
+      } finally {
+        reader.releaseLock();
+      }
+    }
+
+    return {
+      async chat(messages, system, model, maxTokens, signal) {
+        const res = await fetch(`${v1}/chat/completions`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ model, messages: toMessages(messages, system), max_tokens: maxTokens, stream: false }),
+          signal,
+        });
+        if (!res.ok) throw new Error(`llamacpp: HTTP ${res.status} ${res.statusText}`);
+        const data = await res.json() as { choices?: Array<{ message?: { content?: string } }> };
+        return data.choices?.[0]?.message?.content ?? "";
+      },
+
+      async stream(messages, system, model, maxTokens, signal, { onChunk }) {
+        const res = await fetch(`${v1}/chat/completions`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ model, messages: toMessages(messages, system), max_tokens: maxTokens, stream: true }),
+          signal,
+        });
+        if (!res.ok) throw new Error(`llamacpp: HTTP ${res.status} ${res.statusText}`);
+        let full = "";
+        for await (const delta of sseDeltas(res.body!, signal)) {
+          if (delta.content) { full += delta.content; onChunk(delta.content); }
+        }
+        return full;
+      },
+
+      async streamWithTools(messages, system, model, maxTokens, signal, tools, onChunk) {
+        const oaiTools = tools.map((t) => ({
+          type: "function" as const,
+          function: { name: t.name, description: t.description, parameters: t.input_schema },
+        }));
+
+        const res = await fetch(`${v1}/chat/completions`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model, messages: toMessages(messages, system), max_tokens: maxTokens, stream: true,
+            tools: oaiTools.length ? oaiTools : undefined,
+          }),
+          signal,
+        });
+        if (!res.ok) throw new Error(`llamacpp: HTTP ${res.status} ${res.statusText}`);
+
+        let full = "";
+        const toolCalls: ToolCall[] = [];
+        const pending = new Map<number, { id: string; name: string; args: string }>();
+
+        for await (const delta of sseDeltas(res.body!, signal)) {
+          if (delta.content) { full += delta.content; onChunk(delta.content); }
+          if (delta.tool_calls) {
+            for (const tc of delta.tool_calls) {
+              if (!pending.has(tc.index)) pending.set(tc.index, { id: tc.id ?? "", name: tc.function?.name ?? "", args: "" });
+              const entry = pending.get(tc.index)!;
+              if (tc.id) entry.id = tc.id;
+              if (tc.function?.name) entry.name = tc.function.name;
+              if (tc.function?.arguments) entry.args += tc.function.arguments;
+            }
+          }
+        }
+
+        for (const [, entry] of pending) {
+          toolCalls.push({ id: entry.id, name: entry.name, input: entry.args ? JSON.parse(entry.args) : {} });
+        }
+        return { text: full, toolCalls, rawBlocks: [] };
+      },
+    };
+  }
+
   // ── Ollama ─────────────────────────────────────────────────────────────────
   if (providerName === "ollama") {
     const baseUrl = providerCfg?.baseUrl ?? "http://localhost:11434";

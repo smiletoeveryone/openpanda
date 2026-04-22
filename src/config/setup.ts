@@ -31,6 +31,12 @@ const PROVIDER_META: Record<
     models: ["llama3", "mistral", "phi3"],
     needsKey: false,
   },
+  llamacpp: {
+    label: "llama.cpp (local — Llama 4 / GGUF models)",
+    keyLabel: "",
+    models: ["llama4-scout", "llama4-maverick", "llama3", "local"],
+    needsKey: false,
+  },
   telegram: {
     label: "Telegram Bot",
     keyLabel: "TELEGRAM_BOT_TOKEN",
@@ -38,6 +44,65 @@ const PROVIDER_META: Record<
     needsKey: true,
   },
 };
+
+/** Step-by-step llama.cpp setup */
+async function setupLlamaCpp(config: AppConfig): Promise<void> {
+  console.log(chalk.dim("\n  🦙 llama.cpp — Local LLM Setup\n"));
+  console.log(chalk.dim("  llama-server exposes an OpenAI-compatible API on a local port."));
+  console.log(chalk.dim("  Any project (Python, Node, Rust …) can connect to it.\n"));
+  console.log(chalk.dim("  Install llama.cpp: https://github.com/ggerganov/llama.cpp\n"));
+  console.log(chalk.dim("  Download Llama 4 GGUF: https://huggingface.co/models?search=llama-4+gguf\n"));
+
+  // Model file path
+  const existingModel = config.llamacpp?.modelPath ?? process.env.LLAMACPP_MODEL ?? "";
+  const modelPath = await input({
+    message: "  Path to .gguf model file:",
+    default: existingModel || undefined,
+  });
+
+  // llama-server binary path (optional)
+  const serverPath = await input({
+    message: "  Path to llama-server binary (leave blank to auto-detect from PATH):",
+    default: config.llamacpp?.serverPath ?? "",
+  });
+
+  // Port
+  const portStr = await input({
+    message: "  Server port:",
+    default: String(config.llamacpp?.port ?? 8080),
+  });
+
+  // GPU layers
+  const gpuStr = await input({
+    message: "  GPU layers to offload (0 = CPU only, -1 = all):",
+    default: String(config.llamacpp?.nGpuLayers ?? 0),
+  });
+
+  // Context size
+  const ctxStr = await input({
+    message: "  Context window size (tokens):",
+    default: String(config.llamacpp?.ctxSize ?? 4096),
+  });
+
+  config.llamacpp = {
+    modelPath: modelPath || existingModel || undefined,
+    serverPath: serverPath || undefined,
+    port: parseInt(portStr, 10) || 8080,
+    nGpuLayers: parseInt(gpuStr, 10) || 0,
+    ctxSize: parseInt(ctxStr, 10) || 4096,
+  };
+
+  const port = config.llamacpp.port ?? 8080;
+  const host = config.llamacpp.host ?? "127.0.0.1";
+  const endpoint = `http://${host}:${port}`;
+
+  // Register as a provider so OpenPanda can use it
+  config.providers.llamacpp = { baseUrl: endpoint, enabled: true };
+
+  console.log(chalk.green("\n  ✓ llama.cpp configured"));
+  console.log(chalk.dim(`  API endpoint: ${endpoint}/v1 (OpenAI-compatible)\n`));
+  console.log(chalk.dim("  Start the server with: openpanda llamacpp\n"));
+}
 
 /** Step-by-step Telegram bot setup with instructions */
 async function setupTelegram(config: AppConfig): Promise<void> {
@@ -128,6 +193,7 @@ export async function runSetup(force = false): Promise<AppConfig> {
       { name: "OpenAI (GPT) only", value: ["openai"] },
       { name: "Both Anthropic + OpenAI", value: ["anthropic", "openai"] },
       { name: "Ollama (local, no key needed)", value: ["ollama"] },
+      { name: "llama.cpp — Llama 4 / GGUF (local, no key needed)", value: ["llamacpp"] },
       { name: "Telegram Bot (messaging)", value: ["telegram"] },
       { name: "All AI providers (Anthropic + OpenAI + Ollama)", value: ["anthropic", "openai", "ollama"] },
       { name: "AI + Telegram", value: ["anthropic", "openai", "telegram"] },
@@ -141,6 +207,8 @@ export async function runSetup(force = false): Promise<AppConfig> {
     if (provider === "telegram") {
       // Special Telegram setup with step-by-step instructions
       await setupTelegram(config);
+    } else if (provider === "llamacpp") {
+      await setupLlamaCpp(config);
     } else if (meta.needsKey) {
       const existing = config.providers[provider]?.apiKey;
       const masked = existing ? `  (current: ${existing.slice(0, 8)}…)` : "";
