@@ -285,10 +285,46 @@ export async function buildProvider(providerName: string, config: AppConfig): Pr
     const baseUrl = providerCfg?.baseUrl ?? "http://127.0.0.1:8080";
     const v1 = `${baseUrl}/v1`;
 
-    const toMessages = (messages: AgentMessage[], system?: string) => [
-      ...(system ? [{ role: "system", content: system }] : []),
-      ...messages.map((m) => ({ role: m.role, content: m.content })),
-    ];
+    /**
+     * Remove JSON-Schema meta-fields that llama-server may reject
+     * ($schema, additionalProperties) from tool parameter schemas.
+     */
+    function stripSchemaExtensions(schema: Record<string, unknown>): Record<string, unknown> {
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      const { $schema, additionalProperties, ...rest } = schema;
+      return rest;
+    }
+
+    /**
+     * Convert AgentMessage[] to OpenAI-compatible message objects.
+     * Handles tool-call history (rawBlocks stored as OAI tool_calls, and
+     * toolResults as role:"tool" messages) so multi-turn tool use works.
+     */
+    const toMessages = (messages: AgentMessage[], system?: string): unknown[] => {
+      const out: unknown[] = [];
+      if (system) out.push({ role: "system", content: system });
+
+      for (const m of messages) {
+        if (m.rawBlocks && Array.isArray(m.rawBlocks) && m.rawBlocks.length > 0) {
+          // Assistant turn that made tool calls — rawBlocks are stored as
+          // { type:"llamacpp_tool_calls", tool_calls:[...] } by this provider
+          const block = m.rawBlocks[0] as { type?: string; tool_calls?: unknown[] };
+          if (block?.type === "llamacpp_tool_calls" && block.tool_calls) {
+            out.push({ role: "assistant", content: m.content || null, tool_calls: block.tool_calls });
+            continue;
+          }
+        }
+        if (m.toolResults && m.toolResults.length > 0) {
+          // Tool result turn — emit one role:"tool" message per result
+          for (const r of m.toolResults) {
+            out.push({ role: "tool", tool_call_id: r.toolUseId, content: r.content });
+          }
+          continue;
+        }
+        out.push({ role: m.role, content: m.content || "" });
+      }
+      return out;
+    };
 
     /** Parse an OpenAI-compatible SSE stream, yielding each delta object. */
     async function* sseDeltas(body: ReadableStream<Uint8Array>, signal: AbortSignal) {
@@ -324,25 +360,27 @@ export async function buildProvider(providerName: string, config: AppConfig): Pr
 
     return {
       async chat(messages, system, model, maxTokens, signal) {
+        const body = JSON.stringify({ model, messages: toMessages(messages, system), max_tokens: maxTokens, stream: false });
         const res = await fetch(`${v1}/chat/completions`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ model, messages: toMessages(messages, system), max_tokens: maxTokens, stream: false }),
-          signal,
+          method: "POST", headers: { "Content-Type": "application/json" }, body, signal,
         });
-        if (!res.ok) throw new Error(`llamacpp: HTTP ${res.status} ${res.statusText}`);
+        if (!res.ok) {
+          const errBody = await res.text().catch(() => "");
+          throw new Error(`llamacpp: HTTP ${res.status} — ${errBody}`);
+        }
         const data = await res.json() as { choices?: Array<{ message?: { content?: string } }> };
         return data.choices?.[0]?.message?.content ?? "";
       },
 
       async stream(messages, system, model, maxTokens, signal, { onChunk }) {
+        const body = JSON.stringify({ model, messages: toMessages(messages, system), max_tokens: maxTokens, stream: true });
         const res = await fetch(`${v1}/chat/completions`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ model, messages: toMessages(messages, system), max_tokens: maxTokens, stream: true }),
-          signal,
+          method: "POST", headers: { "Content-Type": "application/json" }, body, signal,
         });
-        if (!res.ok) throw new Error(`llamacpp: HTTP ${res.status} ${res.statusText}`);
+        if (!res.ok) {
+          const errBody = await res.text().catch(() => "");
+          throw new Error(`llamacpp: HTTP ${res.status} — ${errBody}`);
+        }
         let full = "";
         for await (const delta of sseDeltas(res.body!, signal)) {
           if (delta.content) { full += delta.content; onChunk(delta.content); }
@@ -353,19 +391,29 @@ export async function buildProvider(providerName: string, config: AppConfig): Pr
       async streamWithTools(messages, system, model, maxTokens, signal, tools, onChunk) {
         const oaiTools = tools.map((t) => ({
           type: "function" as const,
-          function: { name: t.name, description: t.description, parameters: t.input_schema },
+          function: {
+            name: t.name,
+            description: t.description,
+            // Strip $schema and additionalProperties — not accepted by all llama-server versions
+            parameters: stripSchemaExtensions(t.input_schema),
+          },
         }));
 
+        const payload = {
+          model,
+          messages: toMessages(messages, system),
+          max_tokens: maxTokens,
+          stream: true,
+          tools: oaiTools.length ? oaiTools : undefined,
+        };
+        const body = JSON.stringify(payload);
         const res = await fetch(`${v1}/chat/completions`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            model, messages: toMessages(messages, system), max_tokens: maxTokens, stream: true,
-            tools: oaiTools.length ? oaiTools : undefined,
-          }),
-          signal,
+          method: "POST", headers: { "Content-Type": "application/json" }, body, signal,
         });
-        if (!res.ok) throw new Error(`llamacpp: HTTP ${res.status} ${res.statusText}`);
+        if (!res.ok) {
+          const errBody = await res.text().catch(() => "");
+          throw new Error(`llamacpp: HTTP ${res.status} — ${errBody}`);
+        }
 
         let full = "";
         const toolCalls: ToolCall[] = [];
@@ -387,7 +435,19 @@ export async function buildProvider(providerName: string, config: AppConfig): Pr
         for (const [, entry] of pending) {
           toolCalls.push({ id: entry.id, name: entry.name, input: entry.args ? JSON.parse(entry.args) : {} });
         }
-        return { text: full, toolCalls, rawBlocks: [] };
+
+        // Store tool_calls in rawBlocks using a llamacpp-specific marker so
+        // toMessages() can reconstruct the proper assistant turn on the next call.
+        const rawBlocks: unknown[] = toolCalls.length ? [{
+          type: "llamacpp_tool_calls",
+          tool_calls: toolCalls.map((tc) => ({
+            id: tc.id,
+            type: "function",
+            function: { name: tc.name, arguments: JSON.stringify(tc.input) },
+          })),
+        }] : [];
+
+        return { text: full, toolCalls, rawBlocks };
       },
     };
   }
