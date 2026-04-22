@@ -296,11 +296,11 @@ export async function buildProvider(providerName: string, config: AppConfig): Pr
     }
 
     /**
-     * Rough token estimator: ~4 chars per token (good enough for trimming).
-     * Avoids needing a real tokenizer.
+     * Token estimator without a real tokenizer.
+     * Plain text: ~4 chars/token. JSON/code: ~2.5 chars/token (more punctuation).
      */
-    function estimateTokens(text: string): number {
-      return Math.ceil(text.length / 4);
+    function estimateTokens(text: string, isJson = false): number {
+      return Math.ceil(text.length / (isJson ? 2.5 : 4));
     }
 
     /**
@@ -314,17 +314,22 @@ export async function buildProvider(providerName: string, config: AppConfig): Pr
       toolsJson: string,
       ctxSize: number
     ): AgentMessage[] {
-      const SAFETY_MARGIN = 1024; // headroom for the model's reply
+      const SAFETY_MARGIN = 2048; // headroom for the model's reply + estimation error
       const budget = ctxSize - SAFETY_MARGIN
         - estimateTokens(system ?? "")
-        - estimateTokens(toolsJson);
+        - estimateTokens(toolsJson, true); // tools schema is JSON-heavy
+
+      if (budget <= 0) return messages.slice(-2); // always keep at least last exchange
 
       // Walk messages newest-first, accumulating until we exceed budget
       let used = 0;
       let keepFrom = messages.length;
       for (let i = messages.length - 1; i >= 0; i--) {
         const m = messages[i];
-        const tokens = estimateTokens(m.content ?? "") + estimateTokens(JSON.stringify(m.rawBlocks ?? [])) + estimateTokens(JSON.stringify(m.toolResults ?? []));
+        const tokens =
+          estimateTokens(m.content ?? "") +
+          estimateTokens(JSON.stringify(m.rawBlocks ?? []), true) +
+          estimateTokens(JSON.stringify(m.toolResults ?? []), true);
         if (used + tokens > budget) break;
         used += tokens;
         keepFrom = i;
@@ -395,7 +400,7 @@ export async function buildProvider(providerName: string, config: AppConfig): Pr
       }
     }
 
-    const CTX_SIZE = config.llamacpp?.ctxSize ?? 8192;
+    const CTX_SIZE = config.llamacpp?.ctxSize ?? 16384;
 
     return {
       async chat(messages, system, model, maxTokens, signal) {
@@ -430,11 +435,14 @@ export async function buildProvider(providerName: string, config: AppConfig): Pr
       },
 
       async streamWithTools(messages, system, model, maxTokens, signal, tools, onChunk) {
+        // Strip verbose descriptions from tool schemas — saves ~500 tokens/request.
+        // The model only needs the function name and parameter schema to call correctly.
         const oaiTools = tools.map((t) => ({
           type: "function" as const,
           function: {
             name: t.name,
-            description: t.description,
+            // Keep description short: first sentence only (up to 120 chars)
+            description: t.description.split(/[.!?]/)[0].slice(0, 120),
             parameters: stripSchemaExtensions(t.input_schema),
           },
         }));
