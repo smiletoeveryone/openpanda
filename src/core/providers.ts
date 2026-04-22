@@ -296,6 +296,43 @@ export async function buildProvider(providerName: string, config: AppConfig): Pr
     }
 
     /**
+     * Rough token estimator: ~4 chars per token (good enough for trimming).
+     * Avoids needing a real tokenizer.
+     */
+    function estimateTokens(text: string): number {
+      return Math.ceil(text.length / 4);
+    }
+
+    /**
+     * Trim message history so the total estimated token count (system + messages
+     * + tool definitions + safety margin) stays under the context window.
+     * Always keeps the most recent messages; trims from the oldest pairs first.
+     */
+    function trimToContext(
+      messages: AgentMessage[],
+      system: string | undefined,
+      toolsJson: string,
+      ctxSize: number
+    ): AgentMessage[] {
+      const SAFETY_MARGIN = 1024; // headroom for the model's reply
+      const budget = ctxSize - SAFETY_MARGIN
+        - estimateTokens(system ?? "")
+        - estimateTokens(toolsJson);
+
+      // Walk messages newest-first, accumulating until we exceed budget
+      let used = 0;
+      let keepFrom = messages.length;
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const m = messages[i];
+        const tokens = estimateTokens(m.content ?? "") + estimateTokens(JSON.stringify(m.rawBlocks ?? [])) + estimateTokens(JSON.stringify(m.toolResults ?? []));
+        if (used + tokens > budget) break;
+        used += tokens;
+        keepFrom = i;
+      }
+      return messages.slice(keepFrom);
+    }
+
+    /**
      * Convert AgentMessage[] to OpenAI-compatible message objects.
      * Handles tool-call history (rawBlocks stored as OAI tool_calls, and
      * toolResults as role:"tool" messages) so multi-turn tool use works.
@@ -358,9 +395,12 @@ export async function buildProvider(providerName: string, config: AppConfig): Pr
       }
     }
 
+    const CTX_SIZE = config.llamacpp?.ctxSize ?? 32768;
+
     return {
       async chat(messages, system, model, maxTokens, signal) {
-        const body = JSON.stringify({ model, messages: toMessages(messages, system), max_tokens: maxTokens, stream: false });
+        const trimmed = trimToContext(messages, system, "", CTX_SIZE);
+        const body = JSON.stringify({ model, messages: toMessages(trimmed, system), max_tokens: maxTokens, stream: false });
         const res = await fetch(`${v1}/chat/completions`, {
           method: "POST", headers: { "Content-Type": "application/json" }, body, signal,
         });
@@ -373,7 +413,8 @@ export async function buildProvider(providerName: string, config: AppConfig): Pr
       },
 
       async stream(messages, system, model, maxTokens, signal, { onChunk }) {
-        const body = JSON.stringify({ model, messages: toMessages(messages, system), max_tokens: maxTokens, stream: true });
+        const trimmed = trimToContext(messages, system, "", CTX_SIZE);
+        const body = JSON.stringify({ model, messages: toMessages(trimmed, system), max_tokens: maxTokens, stream: true });
         const res = await fetch(`${v1}/chat/completions`, {
           method: "POST", headers: { "Content-Type": "application/json" }, body, signal,
         });
@@ -394,14 +435,15 @@ export async function buildProvider(providerName: string, config: AppConfig): Pr
           function: {
             name: t.name,
             description: t.description,
-            // Strip $schema and additionalProperties — not accepted by all llama-server versions
             parameters: stripSchemaExtensions(t.input_schema),
           },
         }));
 
+        const toolsJson = JSON.stringify(oaiTools);
+        const trimmed = trimToContext(messages, system, toolsJson, CTX_SIZE);
         const payload = {
           model,
-          messages: toMessages(messages, system),
+          messages: toMessages(trimmed, system),
           max_tokens: maxTokens,
           stream: true,
           tools: oaiTools.length ? oaiTools : undefined,
