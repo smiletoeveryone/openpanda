@@ -395,7 +395,7 @@ export async function buildProvider(providerName: string, config: AppConfig): Pr
       }
     }
 
-    const CTX_SIZE = config.llamacpp?.ctxSize ?? 32768;
+    const CTX_SIZE = config.llamacpp?.ctxSize ?? 8192;
 
     return {
       async chat(messages, system, model, maxTokens, signal) {
