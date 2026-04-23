@@ -165,24 +165,28 @@ export class TelegramClient {
     messageId: number,
     text: string
   ): Promise<void> {
-    // Don't edit if text is identical or too long
     if (text.length > 4096) {
       throw new Error(`editMessageText: text too long (${text.length} chars), caller must split`);
     }
 
-    const result = await this.request<TelegramEditMessageResult>(
-      "editMessageText",
-      {
+    try {
+      await this.request<TelegramEditMessageResult>("editMessageText", {
         chat_id: chatId,
         message_id: messageId,
         text,
         parse_mode: "HTML",
-      }
-    );
-
-    if (!result.ok) {
-      // Log but don't throw - message edits can fail if text is unchanged
-      console.debug(`Edit message failed: ${result.description}`);
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // Telegram returns 400 when the new text is identical to the existing one.
+      // This happens naturally during streaming when two rapid flushes produce the
+      // same HTML (e.g. only whitespace changed). Treat it as a no-op.
+      if (msg.includes("400") || msg.includes("message is not modified")) return;
+      // Network blips (fetch failed) during a streaming edit are also non-fatal —
+      // the next flush will try again with accumulated content.
+      if (msg.includes("fetch failed") || msg.includes("ECONNRESET") || msg.includes("ETIMEDOUT")) return;
+      // Any other error is worth surfacing so callers can decide
+      throw err;
     }
   }
 

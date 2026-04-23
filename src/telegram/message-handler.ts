@@ -22,9 +22,9 @@ const AGENT_PRESETS = loadAgents();
 interface StreamBuffer {
   text: string;        // full accumulated raw text — never cleared mid-stream
   flushedLen: number;  // length of text at the time of the last flush
+  lastHtml: string;    // last HTML sent — skip edit when content hasn't changed
   messageId?: number;
   timer?: NodeJS.Timeout;
-  editFailures: number; // consecutive edit failures; resets to 0 on success
 }
 
 const CHUNK_BUFFER_SIZE = 2000;   // Flush early so we have room to split before hitting Telegram's 4096 limit
@@ -195,9 +195,9 @@ export class TelegramMessageHandler {
       const buffer: StreamBuffer = {
         text: "",
         flushedLen: 0,
+        lastHtml: "",
         messageId: undefined,
         timer: undefined,
-        editFailures: 0,
       };
 
       this.streamBuffers.set(chatId, buffer);
@@ -258,6 +258,10 @@ export class TelegramMessageHandler {
    * 4096-char limit, the current message is sealed and a new message is started
    * for the remainder. buffer.text is reset on split so buffer.flushedLen always
    * refers to the current (unsealed) segment.
+   *
+   * Resilience: identical HTML is skipped before hitting the API (avoids
+   * Telegram's "message is not modified" 400). Network errors on sendMessage
+   * are retried once; errors on editMessageText are absorbed by the client.
    */
   private async flushStreamBuffer(
     chatId: number,
@@ -267,6 +271,23 @@ export class TelegramMessageHandler {
 
     const MAX_HTML = 3800; // well below Telegram's 4096 limit
     const html = mdToTelegramHtml(buffer.text);
+
+    // Skip when HTML is unchanged — avoids Telegram's "message is not modified" 400
+    if (html === buffer.lastHtml) return;
+
+    const sendWithRetry = async (text: string): Promise<{ message_id: number }> => {
+      try {
+        return await this.client.sendMessage(chatId, text);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (msg.includes("fetch failed") || msg.includes("ECONNRESET")) {
+          // One retry after a short pause on network blip
+          await new Promise((r) => setTimeout(r, 2000));
+          return this.client.sendMessage(chatId, text);
+        }
+        throw err;
+      }
+    };
 
     try {
       if (html.length > MAX_HTML) {
@@ -280,13 +301,15 @@ export class TelegramMessageHandler {
         if (buffer.messageId) {
           await this.client.editMessageText(chatId, buffer.messageId, firstHtml);
         } else {
-          const result = await this.client.sendMessage(chatId, firstHtml);
+          const result = await sendWithRetry(firstHtml);
           buffer.messageId = result.message_id;
         }
+        buffer.lastHtml = firstHtml;
 
         // Seal the current message; start fresh for the remainder
         buffer.text = buffer.text.slice(splitAt);
         buffer.flushedLen = 0;
+        buffer.lastHtml = "";
         buffer.messageId = undefined;
 
         if (buffer.text.length > 0) {
@@ -296,20 +319,14 @@ export class TelegramMessageHandler {
         if (buffer.messageId) {
           await this.client.editMessageText(chatId, buffer.messageId, html);
         } else {
-          const result = await this.client.sendMessage(chatId, html);
+          const result = await sendWithRetry(html);
           buffer.messageId = result.message_id;
         }
+        buffer.lastHtml = html;
         buffer.flushedLen = buffer.text.length;
-        buffer.editFailures = 0; // reset failure counter on success
       }
     } catch (error) {
       console.error("Failed to flush stream buffer:", error);
-      // If the edit failed (network error, Telegram rate-limit, etc.), clear the
-      // messageId so the next flush uses sendMessage instead of retrying a broken
-      // edit. Without this, every subsequent flush also fails and the user sees
-      // nothing after the first partial message.
-      buffer.messageId = undefined;
-      buffer.editFailures++;
     }
   }
 
