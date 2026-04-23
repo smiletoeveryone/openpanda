@@ -468,8 +468,8 @@ Message history preserved.${rest.length > 0 ? "\n\n<i>Sending your message now..
       await this.client.sendMessage(chatId, `Usage: /model &lt;name&gt;\nCurrent: ${session.model}`);
       return;
     }
-    this.sessionManager.setModel(chatId, modelName);
-    await this.client.sendMessage(chatId, `✓ Model changed to: <b>${modelName}</b>`);
+    await this.sessionManager.respawnAgent(chatId, session.provider, modelName, session.systemPrompt);
+    await this.client.sendMessage(chatId, `✓ Model changed to: <b>${modelName}</b>\nMessage history preserved.`);
   }
 
   private async handleProvider(chatId: number, session: any, providerName: string): Promise<void> {
@@ -478,7 +478,7 @@ Message history preserved.${rest.length > 0 ? "\n\n<i>Sending your message now..
       return;
     }
 
-    const validProviders: ProviderName[] = ["anthropic", "openai", "ollama"];
+    const validProviders: ProviderName[] = ["anthropic", "openai", "ollama", "llamacpp"];
     if (!validProviders.includes(providerName as ProviderName)) {
       await this.client.sendMessage(
         chatId,
@@ -487,8 +487,8 @@ Message history preserved.${rest.length > 0 ? "\n\n<i>Sending your message now..
       return;
     }
 
-    this.sessionManager.setProvider(chatId, providerName as ProviderName);
-    await this.client.sendMessage(chatId, `✓ Provider changed to: <b>${providerName}</b>`);
+    await this.sessionManager.respawnAgent(chatId, providerName as ProviderName, session.model, session.systemPrompt);
+    await this.client.sendMessage(chatId, `✓ Provider changed to: <b>${providerName}</b>\nMessage history preserved.`);
   }
 
   private async handleInfo(chatId: number, session: any): Promise<void> {

@@ -46,15 +46,17 @@ export class TelegramSessionManager {
     const sessionName = this.getSessionName(chatId, username);
     const savedSession = loadSession(sessionName);
 
-    // "telegram" is a messaging interface, not an LLM provider — fall back to anthropic
-    const provider: ProviderName =
-      this.manager.config.defaultProvider !== "telegram"
-        ? this.manager.config.defaultProvider
-        : "anthropic";
-    const model =
-      this.manager.config.defaultModel !== "telegram"
-        ? this.manager.config.defaultModel
-        : "claude-sonnet-4-6";
+    // Prefer saved session's provider/model; fall back to config defaults.
+    // "telegram" is a messaging interface, not an LLM provider — skip it.
+    const nonTelegramDefault = (p: string) => p !== "telegram" ? p : undefined;
+    const provider: ProviderName = (
+      (savedSession?.provider && nonTelegramDefault(savedSession.provider)) ??
+      nonTelegramDefault(this.manager.config.defaultProvider) ??
+      "anthropic"
+    ) as ProviderName;
+    const model: string =
+      (savedSession?.model && savedSession.model !== "telegram" ? savedSession.model : undefined) ??
+      (this.manager.config.defaultModel !== "telegram" ? this.manager.config.defaultModel : "claude-sonnet-4-6");
 
     // Create new session
     session = {
@@ -63,7 +65,7 @@ export class TelegramSessionManager {
       sessionName,
       provider,
       model,
-      systemPrompt: undefined,
+      systemPrompt: savedSession?.systemPrompt,
       streaming: false,
     };
 
