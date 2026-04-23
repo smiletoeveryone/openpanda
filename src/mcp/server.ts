@@ -1,12 +1,16 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { JSDOM } from "jsdom";
+import { JSDOM, VirtualConsole } from "jsdom";
 import { Readability } from "@mozilla/readability";
 import { readFileSync, readdirSync, statSync, lstatSync } from "fs";
 import { extname, join, resolve } from "path";
 import { homedir } from "os";
 
 const UA = "Mozilla/5.0 (compatible; OpenPanda/0.1; +https://github.com/openpanda)";
+
+// Silent virtual console — suppresses jsdom CSS parse warnings that appear
+// whenever a fetched page has stylesheets jsdom cannot handle.
+const silentConsole = new VirtualConsole();
 
 async function readableExtract(url: string, maxChars = 10_000): Promise<string> {
   const res = await fetch(url, {
@@ -16,7 +20,7 @@ async function readableExtract(url: string, maxChars = 10_000): Promise<string> 
   if (!res.ok) throw new Error(`HTTP ${res.status} — ${res.statusText}`);
 
   const html = await res.text();
-  const dom = new JSDOM(html, { url });
+  const dom = new JSDOM(html, { url, virtualConsole: silentConsole });
   const reader = new Readability(dom.window.document as unknown as Document);
   const article = reader.parse();
 

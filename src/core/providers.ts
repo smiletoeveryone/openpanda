@@ -400,12 +400,15 @@ export async function buildProvider(providerName: string, config: AppConfig): Pr
       }
     }
 
-    const CTX_SIZE = config.llamacpp?.ctxSize ?? 16384;
+    const CTX_SIZE = config.llamacpp?.ctxSize ?? 8192;
+    // Cap output tokens so prompt + output never exceeds the context window.
+    // We reserve half the window for the prompt; the other half is for output.
+    const capMaxTokens = (requested: number) => Math.min(requested, Math.floor(CTX_SIZE / 2));
 
     return {
       async chat(messages, system, model, maxTokens, signal) {
         const trimmed = trimToContext(messages, system, "", CTX_SIZE);
-        const body = JSON.stringify({ model, messages: toMessages(trimmed, system), max_tokens: maxTokens, stream: false });
+        const body = JSON.stringify({ model, messages: toMessages(trimmed, system), max_tokens: capMaxTokens(maxTokens), stream: false });
         const res = await fetch(`${v1}/chat/completions`, {
           method: "POST", headers: { "Content-Type": "application/json" }, body, signal,
         });
@@ -419,7 +422,7 @@ export async function buildProvider(providerName: string, config: AppConfig): Pr
 
       async stream(messages, system, model, maxTokens, signal, { onChunk }) {
         const trimmed = trimToContext(messages, system, "", CTX_SIZE);
-        const body = JSON.stringify({ model, messages: toMessages(trimmed, system), max_tokens: maxTokens, stream: true });
+        const body = JSON.stringify({ model, messages: toMessages(trimmed, system), max_tokens: capMaxTokens(maxTokens), stream: true });
         const res = await fetch(`${v1}/chat/completions`, {
           method: "POST", headers: { "Content-Type": "application/json" }, body, signal,
         });
@@ -427,11 +430,12 @@ export async function buildProvider(providerName: string, config: AppConfig): Pr
           const errBody = await res.text().catch(() => "");
           throw new Error(`llamacpp: HTTP ${res.status} — ${errBody}`);
         }
-        let full = "";
+        let text = "";
         for await (const delta of sseDeltas(res.body!, signal)) {
-          if (delta.content) { full += delta.content; onChunk(delta.content); }
+          const chunk = delta.content ?? "";
+          if (chunk) { text += chunk; onChunk(chunk); }
         }
-        return full;
+        return text;
       },
 
       async streamWithTools(messages, system, model, maxTokens, signal, tools, onChunk) {
@@ -452,9 +456,7 @@ export async function buildProvider(providerName: string, config: AppConfig): Pr
         const payload = {
           model,
           messages: toMessages(trimmed, system),
-          max_tokens: maxTokens,
-          stream: true,
-          tools: oaiTools.length ? oaiTools : undefined,
+          max_tokens: capMaxTokens(maxTokens),
         };
         const body = JSON.stringify(payload);
         const res = await fetch(`${v1}/chat/completions`, {

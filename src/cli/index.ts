@@ -1,4 +1,10 @@
 #!/usr/bin/env node
+// Suppress Node.js deprecation warnings from third-party packages (e.g. jsdom → punycode).
+process.removeAllListeners("warning");
+process.on("warning", (w) => {
+  if (w.name === "DeprecationWarning") return; // swallow
+  process.stderr.write(`[warn] ${w.message}\n`);
+});
 import "dotenv/config";
 import { Command } from "commander";
 import { join } from "node:path";
