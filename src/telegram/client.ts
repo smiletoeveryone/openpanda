@@ -189,12 +189,12 @@ export class TelegramClient {
   /**
    * Validate that the token works
    */
-  async validateToken(): Promise<boolean> {
+  async validateToken(): Promise<{ valid: boolean; error?: string }> {
     try {
       const result = await this.getMe();
-      return result.ok ?? false;
-    } catch {
-      return false;
+      return { valid: result.ok ?? false };
+    } catch (err) {
+      return { valid: false, error: err instanceof Error ? err.message : String(err) };
     }
   }
 }

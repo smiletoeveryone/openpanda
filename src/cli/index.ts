@@ -171,9 +171,15 @@ program.addCommand(
 
       // Validate token
       const client = new TelegramClient(config.providers.telegram.apiKey);
-      const isValid = await client.validateToken();
-      if (!isValid) {
-        console.error(chalk.red("❌ Invalid Telegram bot token"));
+      const validation = await client.validateToken();
+      if (!validation.valid) {
+        if (validation.error) {
+          console.error(chalk.red(`❌ Could not reach Telegram API: ${validation.error}`));
+          console.error(chalk.dim("  Check your network connection and try again."));
+        } else {
+          console.error(chalk.red("❌ Invalid Telegram bot token"));
+          console.error(chalk.dim("  Run: openpanda setup  — and re-enter your bot token."));
+        }
         process.exit(1);
       }
 
