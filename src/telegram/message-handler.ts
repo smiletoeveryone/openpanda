@@ -203,6 +203,13 @@ export class TelegramMessageHandler {
       this.streamBuffers.set(chatId, buffer);
 
       const onChunk = (delta: string) => {
+        // Rate-limit retry notices come through onChunk but must not pollute the
+        // Telegram message. Log them to stderr and discard from the buffer.
+        if (delta.includes("⏳ Rate limited")) {
+          process.stderr.write(`[rate-limit] ${delta.trim()}\n`);
+          return;
+        }
+
         buffer.text += delta;
 
         if (buffer.timer) clearTimeout(buffer.timer);
