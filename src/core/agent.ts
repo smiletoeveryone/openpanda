@@ -114,12 +114,13 @@ export class Agent extends EventEmitter {
       const MAX_ITERATIONS = 10;
 
       while (iterations++ < MAX_ITERATIONS) {
-        // Each LLM call gets its own 90-second deadline so a stalled SSE stream
-        // (e.g. network drop without TCP close on Raspberry Pi) doesn't lock the
-        // terminal forever. The user-facing abort (abortController) also works.
+        // Each LLM call gets its own 5-minute deadline. This must be long enough
+        // to survive: slow Pi inference + Anthropic rate-limit retries (up to
+        // 5+10+20+40s back-off) + large tool-response round-trips.
+        // The user-facing abort (abortController.abort()) still works at any time.
         const iterSignal = AbortSignal.any([
           this.abortController.signal,
-          AbortSignal.timeout(90_000),
+          AbortSignal.timeout(300_000),
         ]);
         const result = await this.provider.streamWithTools(
           this._messages,

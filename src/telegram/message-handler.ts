@@ -239,6 +239,10 @@ export class TelegramMessageHandler {
         buffer.messageId = result.message_id;
       }
     } catch (error) {
+      // Cancel any pending debounce timer so it can't fire after the error
+      // and send stale chunks (e.g. rate-limit retry messages) as phantom messages.
+      const buf = this.streamBuffers.get(chatId);
+      if (buf?.timer) clearTimeout(buf.timer);
       const message = error instanceof Error ? error.message : String(error);
       await this.client.sendMessage(chatId, `❌ Error: ${message}`);
     } finally {
