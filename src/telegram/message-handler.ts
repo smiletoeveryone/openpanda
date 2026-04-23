@@ -24,10 +24,12 @@ interface StreamBuffer {
   flushedLen: number;  // length of text at the time of the last flush
   messageId?: number;
   timer?: NodeJS.Timeout;
+  editFailures: number; // consecutive edit failures; resets to 0 on success
 }
 
-const CHUNK_BUFFER_SIZE = 2000; // Flush early so we have room to split before hitting Telegram's 4096 limit
-const CHUNK_FLUSH_INTERVAL = 500; // ms
+const CHUNK_BUFFER_SIZE = 2000;   // Flush early so we have room to split before hitting Telegram's 4096 limit
+const CHUNK_FLUSH_INTERVAL = 3000; // ms — 3s between edits; kinder to Telegram rate limits on slow models
+const MIN_FLUSH_CHARS = 80;        // Don't flush tiny increments (avoids spam on Pi / local LLMs)
 
 /** Input validation: non-empty string, max 4000 chars, trimmed. */
 const InputSchema = z.string().min(1).max(4000).transform((s) => s.trim());
@@ -195,6 +197,7 @@ export class TelegramMessageHandler {
         flushedLen: 0,
         messageId: undefined,
         timer: undefined,
+        editFailures: 0,
       };
 
       this.streamBuffers.set(chatId, buffer);
@@ -208,9 +211,14 @@ export class TelegramMessageHandler {
         if (buffer.text.length >= CHUNK_BUFFER_SIZE) {
           this.flushStreamBuffer(chatId, buffer).catch(console.error);
         } else {
-          buffer.timer = setTimeout(() => {
-            this.flushStreamBuffer(chatId, buffer).catch(console.error);
-          }, CHUNK_FLUSH_INTERVAL);
+          // Only schedule a timed flush if there's enough new content to be worth
+          // an API call — avoids spamming Telegram on slow local models (Pi / llamacpp)
+          const newChars = buffer.text.length - buffer.flushedLen;
+          if (newChars >= MIN_FLUSH_CHARS || !buffer.messageId) {
+            buffer.timer = setTimeout(() => {
+              this.flushStreamBuffer(chatId, buffer).catch(console.error);
+            }, CHUNK_FLUSH_INTERVAL);
+          }
         }
       };
 
@@ -288,9 +296,16 @@ export class TelegramMessageHandler {
           buffer.messageId = result.message_id;
         }
         buffer.flushedLen = buffer.text.length;
+        buffer.editFailures = 0; // reset failure counter on success
       }
     } catch (error) {
       console.error("Failed to flush stream buffer:", error);
+      // If the edit failed (network error, Telegram rate-limit, etc.), clear the
+      // messageId so the next flush uses sendMessage instead of retrying a broken
+      // edit. Without this, every subsequent flush also fails and the user sees
+      // nothing after the first partial message.
+      buffer.messageId = undefined;
+      buffer.editFailures++;
     }
   }
 
