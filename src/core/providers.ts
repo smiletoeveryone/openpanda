@@ -457,6 +457,11 @@ export async function buildProvider(providerName: string, config: AppConfig): Pr
           model,
           messages: toMessages(trimmed, system),
           max_tokens: capMaxTokens(maxTokens),
+          stream: true,
+          // Tools are intentionally omitted for llama.cpp: smaller models (≤13B)
+          // call tools on nearly every message, causing infinite agentic loops.
+          // The agent loop exits cleanly when toolCalls is empty.
+          // Re-enable when running a model known to be reliable with function calling.
         };
         const body = JSON.stringify(payload);
         const res = await fetch(`${v1}/chat/completions`, {
